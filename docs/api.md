@@ -1,113 +1,179 @@
-# API Referrence
+# API
 
-This document describes the public API exposed by the execution platform.
+## Overview
 
-The API allows clients to submit code, track execution, retrieve results and stream live execution status updates.
+AlpineJudge exposes a minimal API through the Dispatcher subsystem.
 
+Execution is asynchronous.
 
-## Execution Model
+Typical flow:
 
-Each execution request is assigned a unique `exec_id`
-
-All operations (status, results, cancellation, streaming) are tied to this identifier.
-
-
-## POST /execute/
-
-Submit a new code execution request.
-
-``` 
-{
- "language": "Python",
- "version": "python 3.10",
- "code_file": "main.py",
- "testcases": [
-     {
-      "inputs": "...",
-      "output": "...",
-     }
- ]
-}
- ```
-
-Execution response.
-```
-{
- "exec_id": "abc123",
- "status": "queued",
-}
+```text
+POST /job
+      │
+      ▼
+Receive Job ID
+      │
+      ▼
+GET /job/{job_id}/events
+      │
+      ▼
+GET /job/{job_id}/result
 ```
 
-## GET /execute/{exec_id}
-Response:
-```
+---
+
+## POST /job
+
+Creates a new judging job.
+
+### Request
+
+### Metadata
+
+| Field | Description |
+|--------|-------------|
+| job_id | Client-generated unique job identifier |
+| language | Programming language |
+| version | Language version |
+| filename | Must follow `main.*` naming convention |
+| testset_id | Testset identifier |
+| testset_version | Testset version |
+
+Example:
+
+```json
 {
- "exec_id": "abc123",
- "status": "done",
- "results: [
-  {
-   "testcase": 1,
-   "expected": "...",
-   "recieved": "...",
-   "passed": true,
-   "time_ms": "...",
-  }
- ]
+    "job_id": "j111",
+    "language": "python",
+    "version": "python3.12",
+    "filename": "main.py",
+    "testset_id": "ts12",
+    "testset_version": "v1"
 }
 ```
 
-## DELETE /execute/{exec_id}
-Response:
-```
-[
- {
-  "exec_id": "abc123",
-  "status": "cancelled",
- }
-]
-```
+### Source File
 
+The source file is sent as multipart form data.
 
-## GET /execute/
-Response:
-```
-[
- {
-  "exec_id": "abc123",
-  "language": "C++,
-  "time": "...",
-  "created_at": "...",
- }
-]
+The filename **must** be:
+
+```text
+main.<extension>
 ```
 
-## WS /execute/{exec_id}/stream
+Examples:
 
-### Events
-The server streams execution state updates:
-```
-VALIDATED
-RECIEVED
-QUEUED
-RUNNING 
-DONE
+```text
+main.cpp
+main.c
+main.py
+main.java
+main.go
 ```
 
-## Execution states
+Any other filename is rejected.
+
+---
+
+## Response
+
+Returns immediately after the job has been validated and successfully queued.
+
+```json
+{
+    "job_id": "j111",
+    "status": "QUEUED"
+}
 ```
-VALIDATED -> input verified
-RECIEVED -> request accpted
-QUEUED -> waiting for runner
-RUNNING -> executing inside sandbox
-DONE -> completed successfully
-FAILED -> runtime or system error
-CANCELLED -> execution aborted by user
+
+---
+
+## GET /job/{job_id}/events
+
+Returns the current execution progress.
+
+Example response:
+
+```json
+{
+    "job_id": "j111",
+    "status": "RUNNING",
+    "event": "Running test case 3/20"
+}
 ```
 
-## Design notes
+Possible events include:
 
- - All execution flows are identified by a unique `exec_id`
- - Websocket stream provides real-time state transitions
- - APIService acts only as an orchestration layer
- - RunnerService performs all execution work inside isolated environments
+- Queued
+- Downloading source
+- Preparing execution environment
+- Compiling
+- Running test case X/N
+- Cleaning up
+- Completed
+- Failed
 
+---
+
+## GET /job/{job_id}/result
+
+Returns the final judging result.
+
+If execution has not completed, the endpoint should indicate that the result is not yet available (for example, by returning an appropriate status code such as `202 Accepted` or a response indicating the job is still in progress).
+
+Example:
+
+```json
+{
+    "job_id": "j111",
+    "language": "python",
+    "status": "AC",
+    "elapsed_time_ms": 555,
+    "memory_usage_mb": 24,
+    "log_kb": 1202
+}
+```
+
+---
+
+## Verdict Status Codes
+
+| Status | Description |
+|---------|-------------|
+| AC | Accepted |
+| WA | Wrong Answer |
+| TLE | Time Limit Exceeded |
+| MLE | Memory Limit Exceeded |
+| OLE | Output Limit Exceeded |
+| CE | Compilation Error |
+| RE | Runtime Error |
+| IE | Internal Error |
+| PE | Presentation Error |
+| SE | Security Error (Sandbox Violation) |
+
+---
+
+## Execution Flow
+
+```text
+Client
+    │
+    │ POST /job
+    ▼
+Dispatcher
+    │
+    ▼
+RabbitMQ
+    │
+    ▼
+Runner
+    │
+    ▼
+Execution
+    │
+    ├── GET /job/{job_id}/events
+    │
+    └── GET /job/{job_id}/result
+```
